@@ -48,17 +48,26 @@ const crcParams = struct {
 
 pub fn table32reversed() [256]u32 {
     var table: [256]u32 = undefined;
-    const rev_poly = reflect32(crcParams.polynomial);
+
+    // mirror polinomial, needed to speed up little endian ordering
+    const rev_poly = reflect(u32, crcParams.polynomial);
+
     for (0..256) |byte| {
+        // take msb of current remainder
         var crc = @as(u32, @intCast(byte));
+
         for (0..8) |_| {
             if ((crc & 1) != 0) {
+                // if msbit is 1, then pop msbit and divide (xor) by poly
                 crc >>= 1;
                 crc ^= rev_poly;
             } else {
+                // if msbit is 0, just pop msbit
                 crc >>= 1;
             }
         }
+
+        // save crc for curren remainder
         table[byte] = crc;
     }
     return table;
@@ -90,7 +99,7 @@ pub fn crc32slowreflected(data: []const u8) u32 {
     var crc: u32 = crcParams.start;
 
     for (data) |b| {
-        crc = crc ^ (@as(u32, reflect8(b)) << 24);
+        crc = crc ^ (@as(u32, reflect(u8, b)) << 24);
         for (0..8) |_| {
             if (crc & (1 << 31) != 0) {
                 crc = (crc << 1) ^ crcParams.polynomial;
@@ -100,18 +109,26 @@ pub fn crc32slowreflected(data: []const u8) u32 {
         }
     }
 
-    return reflect32(crc ^ crcParams.final);
+    return reflect(u32, crc ^ crcParams.final);
 }
 
+// when using the refleced algo, data need not to be mirrored, since the
+// table is already computed using the mirrored polynomial
 pub fn crc32fastreflected(data: []const u8) u32 {
+    // assign crc register initial value
     var crc: u32 = crcParams.start;
     for (data) |b| {
+        // take msb (little endian)
         crc = crc ^ @as(u32, b);
+        // find position in table by taking msb
         const pos = @as(usize, crc & 0xFF);
+        // remove msb from crc (not used for crc calc)
         crc >>= 8;
+        // xor table loookup with crc
         crc ^= crc32t[pos];
     }
 
+    // xor crc with exit value
     return crc ^ crcParams.final;
 }
 
@@ -122,7 +139,7 @@ pub fn crc32slownormal(data: []const u8) u32 {
         crc = crc ^ (@as(u32, b));
         for (0..8) |_| {
             if (crc & 1 != 0) {
-                crc = (crc >> 1) ^ reflect32(crcParams.polynomial);
+                crc = (crc >> 1) ^ reflect(u32, crcParams.polynomial);
             } else {
                 crc >>= 1;
             }
@@ -132,51 +149,9 @@ pub fn crc32slownormal(data: []const u8) u32 {
     return crc ^ crcParams.final;
 }
 
-pub fn reflect8(value: u8) u8 {
-    var result: u8 = 0;
-    var num = value;
-    const bits = @sizeOf(u8) * 8;
-
-    for (bits) |_| {
-        result <<= 1;
-        result |= num & 1;
-        num >>= 1;
-    }
-
-    return result;
-}
-
-test "reflect8" {
-    try std.testing.expectEqual(0x80, reflect8(1));
-}
-
-test "reflect32" {
-    const test_cases = &[_]struct {
-        input: u32,
-        expected: u32,
-    }{
-        .{ .input = 0b00000010100101000001111010011100, .expected = 0b00111001011110000010100101000000 },
-        .{ .input = 0b11111111111111111111111111111111, .expected = 0b11111111111111111111111111111111 },
-        .{ .input = 0b00000000000000000000000000000000, .expected = 0b00000000000000000000000000000000 },
-        .{ .input = 0b10000000000000000000000000000001, .expected = 0b10000000000000000000000000000001 },
-        .{ .input = 0b11110000111100001111000011110000, .expected = 0b00001111000011110000111100001111 },
-    };
-
-    for (test_cases) |test_case| {
-        const result = reflect32(test_case.input);
-        try std.testing.expectEqual(test_case.expected, result);
-    }
-}
-
-pub fn reflect32(value: u32) u32 {
-    var result: u32 = 0;
-    var num = value;
-    for (@sizeOf(u32) * 8) |_| {
-        result <<= 1;
-        result |= num & 1;
-        num >>= 1;
-    }
-    return result;
+test "crc" {
+    const i = "claudio amendola fa ridere";
+    try std.testing.expectEqual(0x82CCDB98, crc32fastreflected(i));
 }
 
 test "crc32fastreflected" {
@@ -207,4 +182,20 @@ test "crc32slownormal" {
     const crc_empty_data: *const [4]u8 = @ptrCast(&crc_empty);
     const magic = crc32slownormal(crc_empty_data) ^ crcParams.start;
     try std.testing.expectEqual(magic, crcParams.magic);
+}
+
+pub fn reflect(comptime T: type, value: T) T {
+    var result: T = 0;
+    var num = value;
+    for (@sizeOf(T) * 8) |_| {
+        result <<= 1;
+        result |= num & 1;
+        num >>= 1;
+    }
+    return result;
+}
+
+test "reflect" {
+    try std.testing.expectEqual(0x80, reflect(u8, 1));
+    try std.testing.expectEqual(0x8000_0000, reflect(u32, 1));
 }
